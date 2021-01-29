@@ -11,6 +11,7 @@ package com.gacfinance.ycloans2.convertor;
 
 import com.gacfinance.ycloans2.convertor.grammar.single.Java8BaseVisitor;
 import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser;
+import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.*;
 import org.antlr.v4.runtime.ParserRuleContext;
 
 import java.util.ArrayList;
@@ -56,7 +57,7 @@ public class ScopeTree extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitCompilationUnit(Java8Parser.CompilationUnitContext ctx) {
+    public Void visitCompilationUnit(CompilationUnitContext ctx) {
         Node n = new Node();
         n.data = ctx;
         n.scope = true;
@@ -67,8 +68,22 @@ public class ScopeTree extends Java8BaseVisitor<Void> {
         return super.visitCompilationUnit(ctx);
     }
 
+/*    @Override
+    public Void visitPackageDeclaration(Java8Parser.PackageDeclarationContext ctx) {
+        Node n = new Node();
+        n.data = ctx;
+        n.parent = scopeNode;
+        n.scope = true;
+        scopeNode.addNode(n);
+
+        scopeNode = n;
+//        visitPackageDeclaration(ctx);
+        return null;
+    }*/
+
+
     @Override
-    public Void visitNormalClassDeclaration(Java8Parser.NormalClassDeclarationContext ctx) {
+    public Void visitNormalClassDeclaration(NormalClassDeclarationContext ctx) {
         Node n = new Node();
         n.data = ctx;
         n.parent = scopeNode;
@@ -82,16 +97,19 @@ public class ScopeTree extends Java8BaseVisitor<Void> {
         return null;
     }
 
+
+
+
     @Override
-    public Void visitVariableDeclaratorId(Java8Parser.VariableDeclaratorIdContext ctx) {
+    public Void visitVariableDeclaratorId(VariableDeclaratorIdContext ctx) {
         Node n = new Node();
         n.data = ctx;
         n.parent = scopeNode;
 
         ParserRuleContext parent = ctx.getParent();
 
-        if (parent instanceof Java8Parser.VariableDeclaratorContext) {
-            Java8Parser.VariableInitializerContext initial = ((Java8Parser.VariableDeclaratorContext) parent).variableInitializer();
+        if (parent instanceof VariableDeclaratorContext) {
+            VariableInitializerContext initial = ((VariableDeclaratorContext) parent).variableInitializer();
 
             if (initial != null && initial.getText().equals("null"))
                 n.optional = true;
@@ -103,7 +121,7 @@ public class ScopeTree extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitMethodDeclaration(Java8Parser.MethodDeclarationContext ctx) {
+    public Void visitMethodDeclaration(MethodDeclarationContext ctx) {
         Node n = new Node();
         n.parent = scopeNode;
         n.data = ctx;
@@ -121,7 +139,7 @@ public class ScopeTree extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitPostIncrementExpression(Java8Parser.PostIncrementExpressionContext ctx) {
+    public Void visitPostIncrementExpression(PostIncrementExpressionContext ctx) {
         String var = ctx.postfixExpression().getText();
         checkVariable(scopeNode, var, false);
 
@@ -129,7 +147,7 @@ public class ScopeTree extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitPostfixExpression(Java8Parser.PostfixExpressionContext ctx) {
+    public Void visitPostfixExpression(PostfixExpressionContext ctx) {
         if (ctx.postDecrementExpression_lf_postfixExpression(0) != null
                 || ctx.postIncrementExpression_lf_postfixExpression(0) != null) {
             String var = ctx.expressionName().getText();
@@ -140,7 +158,7 @@ public class ScopeTree extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitPostDecrementExpression(Java8Parser.PostDecrementExpressionContext ctx) {
+    public Void visitPostDecrementExpression(PostDecrementExpressionContext ctx) {
         String var = ctx.postfixExpression().getText();
         checkVariable(scopeNode, var, false);
 
@@ -148,7 +166,7 @@ public class ScopeTree extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitPreIncrementExpression(Java8Parser.PreIncrementExpressionContext ctx) {
+    public Void visitPreIncrementExpression(PreIncrementExpressionContext ctx) {
         String var = ctx.unaryExpression().getText();
         checkVariable(scopeNode, var, false);
 
@@ -156,7 +174,7 @@ public class ScopeTree extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitPreDecrementExpression(Java8Parser.PreDecrementExpressionContext ctx) {
+    public Void visitPreDecrementExpression(PreDecrementExpressionContext ctx) {
         String var = ctx.unaryExpression().getText();
         checkVariable(scopeNode, var, false);
 
@@ -164,7 +182,7 @@ public class ScopeTree extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitAssignment(Java8Parser.AssignmentContext ctx) {
+    public Void visitAssignment(AssignmentContext ctx) {
         String leftHandSide = ctx.leftHandSide().getText();
 
         String expression = ctx.expression().getText();
@@ -178,10 +196,10 @@ public class ScopeTree extends Java8BaseVisitor<Void> {
         boolean flag = false;
 
         for (Node c : n.children) {
-            if (c.data instanceof Java8Parser.LocalVariableDeclarationContext) {
-                Java8Parser.LocalVariableDeclarationContext context = (Java8Parser.LocalVariableDeclarationContext) c.data;
+            if (c.data instanceof LocalVariableDeclarationContext) {
+                LocalVariableDeclarationContext context = (LocalVariableDeclarationContext) c.data;
 
-                for (Java8Parser.VariableDeclaratorContext x : context.variableDeclaratorList().variableDeclarator()) {
+                for (VariableDeclaratorContext x : context.variableDeclaratorList().variableDeclarator()) {
                     String id = x.variableDeclaratorId().getText();
 
                     if (var.equals(id)) {
@@ -196,8 +214,8 @@ public class ScopeTree extends Java8BaseVisitor<Void> {
 
                 }
             }
-            if (c.data instanceof Java8Parser.VariableDeclaratorIdContext) {
-                Java8Parser.VariableDeclaratorIdContext context = (Java8Parser.VariableDeclaratorIdContext) c.data;
+            if (c.data instanceof VariableDeclaratorIdContext) {
+                VariableDeclaratorIdContext context = (VariableDeclaratorIdContext) c.data;
 
                 if (var.equals(context.Identifier().getText())) {
                     c.variable = true;

@@ -1,22 +1,17 @@
+/********************************************************************************
+ * Copyright (c) 2011-2017 Red Hat Inc. and/or its affiliates and others
+ *
+ * This program and the accompanying materials are made available under the 
+ * terms of the Apache License, Version 2.0 which is available at
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * SPDX-License-Identifier: Apache-2.0 
+ ********************************************************************************/
 package com.gacfinance.ycloans2.convertor;
 
 import com.gacfinance.ycloans2.convertor.grammar.single.Java8BaseVisitor;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.CompilationUnitContext;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.ImportDeclarationContext;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.TypeNameContext;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.NormalClassDeclarationContext;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.ClassBodyDeclarationContext;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.TypeParametersContext;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.TypeParameterListContext;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.TypeParameterContext;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.TypeBoundContext;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.WildcardContext;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.SuperclassContext;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.SuperinterfacesContext;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.ClassTypeContext;
-import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.ClassOrInterfaceTypeContext;
-
+import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.*;
+import com.gacfinance.ycloans2.convertor.ScopeTree.Node;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
@@ -27,7 +22,7 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
+public class JavaToCeylonConverter extends Java8BaseVisitor<Void> {
 
     private boolean transformGetters;
     private boolean useValues;
@@ -42,8 +37,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
             "satisfies", "super", "switch", "then", "this", "throw", "try", "value", "void", "while"
     );
 
-
-    public OrmHibernateClassConvertor(Writer out, boolean transformGetters, boolean useValues, ScopeTree scopeTree) {
+    public JavaToCeylonConverter(Writer out, boolean transformGetters, boolean useValues, ScopeTree scopeTree) {
         writer = out;
         this.transformGetters = transformGetters;
         this.useValues = useValues;
@@ -68,6 +62,31 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return false;
     }
 
+    private void addImport(Map<String, List<String>> importsByPackage, String pack, String type) {
+        List<String> imports;
+
+        pack = escapePackageIdentifiers(pack);
+
+        if (importsByPackage.containsKey(pack)) {
+            imports = importsByPackage.get(pack);
+        } else {
+            imports = new ArrayList<>();
+            importsByPackage.put(pack, imports);
+        }
+
+        // import on demand wins over single imports
+        if (type.equals("...") && !imports.isEmpty()) {
+            imports.clear();
+        }
+
+        if (imports.size() == 1 && imports.get(0).equals("...")) {
+            return; // No need to add a single import if there's already a wildcard
+        }
+
+        if(!imports.contains(type))
+            imports.add(type);
+    }
+
     private String escapePackageIdentifiers(String pack) {
         StringBuilder builder = new StringBuilder();
 
@@ -81,30 +100,92 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return builder.toString();
     }
 
+    private void addStaticImport(Map<String, List<String>> staticImports, String pack, String type) {
+        List<String> imports;
+
+        if(staticImports.containsKey(pack)) {
+            imports = staticImports.get(pack);
+        } else {
+            imports = new ArrayList<>();
+            staticImports.put(pack, imports);
+        }
+
+        // import on demand wins over single imports
+        if (type.equals("...") && !imports.isEmpty()) {
+            imports.clear();
+        }
+
+        if (imports.size() == 1 && imports.get(0).equals("...")) {
+            return; // No need to add a single import if there's already a wildcard
+        }
+
+        if(!imports.contains(type))
+            imports.add(type);
+    }
 
     @Override
     public Void visitCompilationUnit(CompilationUnitContext ctx) {
-        Java8Parser.PackageDeclarationContext packageDeclarationContext = ctx.packageDeclaration();
-
-        write("package ");
-        write(packageDeclarationContext.getText().replace("package",""));
-        write("\r\n");
+        Map<String, List<String>> importsByPackage = new LinkedHashMap<>();
+        Map<String, List<String>> staticImports = new LinkedHashMap<>();
 
         for (ImportDeclarationContext decl : ctx.importDeclaration()) {
+            if (decl.singleTypeImportDeclaration() != null) {
+                TypeNameContext typeName = decl.singleTypeImportDeclaration().typeName();
+                addImport(importsByPackage, typeName.packageOrTypeName().getText(), typeName.Identifier().getText());
+            }
+            if (decl.typeImportOnDemandDeclaration() != null) {
+                String pkgName = decl.typeImportOnDemandDeclaration().packageOrTypeName().getText();
+                addImport(importsByPackage, pkgName, "...");
+            }
 
+            if(decl.singleStaticImportDeclaration() != null) {
+                TypeNameContext typeName = decl.singleStaticImportDeclaration().typeName();
+                addImport(importsByPackage, typeName.packageOrTypeName().getText(), typeName.Identifier().getText());
+                addStaticImport(staticImports, typeName.getText(), decl.singleStaticImportDeclaration().Identifier().getText());
+            }
+            if(decl.staticImportOnDemandDeclaration() != null) {
+                TypeNameContext typeName = decl.staticImportOnDemandDeclaration().typeName();
+                addImport(importsByPackage, typeName.packageOrTypeName().getText(), typeName.Identifier().getText());
+                addStaticImport(staticImports, typeName.getText(), "...");
+            }
+        }
+
+        for (Map.Entry<String, List<String>> entry : importsByPackage.entrySet()) {
+            String key = entry.getKey();
             write("import ");
-            write(decl.getText().replace("import",""));
-            write("\r\n");
+            write(key);
+            write(" {\n");
+
+            for (int i = 0; i < entry.getValue().size(); i++) {
+                if (i > 0) {
+                    write(",\n");
+                }
+
+                String value = entry.getValue().get(i);
+
+                write(value);
+                if(staticImports.containsKey(key + "." + value)) {
+                    write("{\n");
+                    List<String> imports = staticImports.get(key + "." + value);
+                    for(int j = 0; j < imports.size(); j++) {
+                        if(j > 0)
+                            write(", \n");
+
+                        write(imports.get(j));
+                    }
+                    write("\n}\n");
+                }
+            }
+            write("\n}\n");
         }
 
         return super.visitCompilationUnit(ctx);
     }
 
-
     @Override
     public Void visitNormalClassDeclaration(NormalClassDeclarationContext ctx) {
         if (hasModifier(ctx.classModifier(), "public")) {
-            write("public ");
+            write("shared ");
         }
         if (hasModifier(ctx.classModifier(), "static")) {
             write("static ");
@@ -115,22 +196,28 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         write("class ");
 
         String identifier = ctx.Identifier().getText();
-        identifier = Character.toUpperCase(identifier.charAt(0)) + identifier.substring(1);
+		identifier = Character.toUpperCase(identifier.charAt(0)) + identifier.substring(1);
 
-        write(identifier); // TODO uppercase first letter
+		write(identifier); // TODO uppercase first letter
         if (ctx.typeParameters() != null) {
             visitTypeParameters(ctx.typeParameters());
         }
         boolean hasExplicitConstructor = false;
-/*        for (ClassBodyDeclarationContext decl : ctx.classBody().classBodyDeclaration()) {
+        for (ClassBodyDeclarationContext decl : ctx.classBody().classBodyDeclaration()) {
             if (decl.constructorDeclaration() != null) {
                 hasExplicitConstructor = true;
                 break;
             }
-        }*/
-
+        }
+        if (!hasExplicitConstructor) {
+            write("()");
+        }
         if (ctx.superclass() != null) {
             visitSuperclass(ctx.superclass());
+
+            if (!hasExplicitConstructor) {
+                write("()");
+            }
         }
         if (ctx.superinterfaces() != null) {
             visitSuperinterfaces(ctx.superinterfaces());
@@ -139,7 +226,6 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
 
         return null;
     }
-
 
     @Override
     public Void visitTypeParameters(TypeParametersContext ctx) {
@@ -174,14 +260,14 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
 
     @Override
     public Void visitWildcard(WildcardContext ctx) {
-        com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.WildcardBoundsContext bounds = ctx.wildcardBounds();
+        WildcardBoundsContext bounds = ctx.wildcardBounds();
         if (bounds != null) {
             if (bounds.getChild(0).getText().equals("extends")) {
                 write("out ");
             } else {
                 write("in ");
             }
-            visitReferenceType((com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.ReferenceTypeContext) bounds.getChild(1));
+            visitReferenceType((ReferenceTypeContext) bounds.getChild(1));
         } else {
             write("out Object");
         }
@@ -196,6 +282,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     @Override
     public Void visitSuperclass(SuperclassContext ctx) {
         write(" extends ");
+
         superClass = ctx.classType();
         super.visitSuperclass(ctx);
         return null;
@@ -203,7 +290,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
 
     @Override
     public Void visitSuperinterfaces(SuperinterfacesContext ctx) {
-        write(" implements ");
+        write(" satisfies ");
         return super.visitSuperinterfaces(ctx);
     }
 
@@ -213,6 +300,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
             visitClassOrInterfaceType((ClassOrInterfaceTypeContext) ctx.getChild(0));
             write(".");
         }
+        // TODO? annotations*
         write(ctx.Identifier().getText());
         if (ctx.typeArguments() != null) {
             visitTypeArguments(ctx.typeArguments());
@@ -221,11 +309,11 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitInterfaceTypeList(Java8Parser.InterfaceTypeListContext ctx) {
+    public Void visitInterfaceTypeList(InterfaceTypeListContext ctx) {
         boolean isFirst = true;
-        for (Java8Parser.InterfaceTypeContext type : ctx.interfaceType()) {
+        for (InterfaceTypeContext type : ctx.interfaceType()) {
             if (!isFirst) {
-                write(" , ");
+                write(" & ");
             }
             visitInterfaceType(type);
             isFirst = false;
@@ -234,7 +322,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitClassBody(Java8Parser.ClassBodyContext ctx) {
+    public Void visitClassBody(ClassBodyContext ctx) {
         write(" {\n\n");
         Void result = super.visitClassBody(ctx);
         write("}\n");
@@ -243,21 +331,21 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitMethodDeclaration(Java8Parser.MethodDeclarationContext ctx) {
+    public Void visitMethodDeclaration(MethodDeclarationContext ctx) {
         if (hasModifier(ctx.methodModifier(), "public")) {
-            write("public ");
+            write("shared ");
         }
         if (hasModifier(ctx.methodModifier(), "static")) {
             write("static ");
         }
         if (hasModifier(ctx.methodModifier(), "@Override")) {
             if(!hasModifier(ctx.methodModifier(), "public"))
-                write("private ");
+                write("shared actual ");
             else
-                write("public ");
+                write("actual ");
         }
         if (hasModifier(ctx.methodModifier(), "abstract")) {
-            write("abstract ");
+            write("formal ");
         }
 
         visitMethodHeader(ctx.methodHeader());
@@ -268,7 +356,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitMethodHeader(Java8Parser.MethodHeaderContext ctx) {
+    public Void visitMethodHeader(MethodHeaderContext ctx) {
         if (ctx.result().getText().equals("void")) {
             write("void ");
         } else {
@@ -280,7 +368,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitMethodDeclarator(Java8Parser.MethodDeclaratorContext ctx) {
+    public Void visitMethodDeclarator(MethodDeclaratorContext ctx) {
         String methodName = ctx.Identifier().getText();
         Matcher matcher = GETTER_PATTERN.matcher(methodName);
         if (transformGetters && matcher.matches() && ctx.formalParameterList() == null) {
@@ -293,9 +381,9 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
             }
             write(escapeIdentifier(property, true));
         } else if ("toString".equals(methodName) && ctx.formalParameterList() == null) {
-            write("toString");
+            write("string");
         } else if ("hashCode".equals(methodName) && ctx.formalParameterList() == null) {
-            write("hashCode");
+            write("hash");
         } else {
             write(escapeIdentifier(methodName, true));
 
@@ -309,7 +397,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitMethodBody(Java8Parser.MethodBodyContext ctx) {
+    public Void visitMethodBody(MethodBodyContext ctx) {
         if (ctx.block() == null) {
             write(";\n");
         } else {
@@ -320,16 +408,16 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitFormalParameterList(Java8Parser.FormalParameterListContext ctx) {
+    public Void visitFormalParameterList(FormalParameterListContext ctx) {
         if (ctx.formalParameters() != null) {
-            for (Java8Parser.FormalParameterContext param : ctx.formalParameters().formalParameter()) {
+            for (FormalParameterContext param : ctx.formalParameters().formalParameter()) {
                 visitFormalParameter(param);
                 write(", ");
             }
         }
 
         if (ctx.lastFormalParameter() != null) {
-            Java8Parser.LastFormalParameterContext lastFormalParameter = ctx.lastFormalParameter();
+            LastFormalParameterContext lastFormalParameter = ctx.lastFormalParameter();
 
             if (lastFormalParameter.formalParameter() != null) {
                 visitFormalParameter(lastFormalParameter.formalParameter());
@@ -342,8 +430,8 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitLastFormalParameter(Java8Parser.LastFormalParameterContext ctx) {
-        ScopeTree.Node n = scopeTree.getNode(ctx.variableDeclaratorId(), scopeTree.root);
+    public Void visitLastFormalParameter(LastFormalParameterContext ctx) {
+        Node n = scopeTree.getNode(ctx.variableDeclaratorId(), scopeTree.root);
 
         if (n.variable && !hasModifier(ctx.variableModifier(), "final")) {
             write("variable ");
@@ -357,8 +445,8 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitFormalParameter(Java8Parser.FormalParameterContext param) {
-        ScopeTree.Node n = scopeTree.getNode(param.variableDeclaratorId(), scopeTree.root);
+    public Void visitFormalParameter(FormalParameterContext param) {
+        Node n = scopeTree.getNode(param.variableDeclaratorId(), scopeTree.root);
 
         if (n.variable && !hasModifier(param.variableModifier(), "final")) {
             write("variable ");
@@ -369,41 +457,44 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return null;
     }
 
-
     @Override
-    public Void visitUnannPrimitiveType(Java8Parser.UnannPrimitiveTypeContext ctx) {
+    public Void visitUnannPrimitiveType(UnannPrimitiveTypeContext ctx) {
         String type = ctx.getText();
 
-        write(type);
-//        switch (type) {
-//            case "int":
-//            case "long":
-//            case "short":
-//                write("Integer");
-//                break;
-//            case "float":
-//            case "double":
-//                write("Float");
-//                break;
-//            case "boolean":
-//                write("Boolean");
-//                break;
-//            case "byte":
-//                write("Byte");
-//                break;
-//            case "char":
-//                write("Character");
-//                break;
-//            default:
-//                write(type);
-//        }
+        switch (type) {
+            case "int":
+            case "long":
+            case "short":
+                write("Integer");
+                break;
+            case "float":
+            case "double":
+                write("Float");
+                break;
+            case "boolean":
+                write("Boolean");
+                break;
+            case "byte":
+                write("Byte");
+                break;
+            case "char":
+                write("Character");
+                break;
+            default:
+                write(type);
+        }
 
         return null;
     }
 
+    @Override
+    public Void visitUnannTypeVariable(UnannTypeVariableContext ctx) {
+        write(ctx.Identifier().getText());
+        return null;
+    }
 
     @Override
-    public Void visitUnannClassType_lfno_unannClassOrInterfaceType(Java8Parser.UnannClassType_lfno_unannClassOrInterfaceTypeContext ctx) {
+    public Void visitUnannClassType_lfno_unannClassOrInterfaceType(UnannClassType_lfno_unannClassOrInterfaceTypeContext ctx) {
         write(ctx.Identifier().getText());
         if (ctx.typeArguments() != null) {
             visitTypeArguments(ctx.typeArguments());
@@ -412,7 +503,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitUnannClassType_lf_unannClassOrInterfaceType(Java8Parser.UnannClassType_lf_unannClassOrInterfaceTypeContext ctx) {
+    public Void visitUnannClassType_lf_unannClassOrInterfaceType(UnannClassType_lf_unannClassOrInterfaceTypeContext ctx) {
         write(".");
         write(ctx.Identifier().getText());
         if (ctx.typeArguments() != null) {
@@ -422,9 +513,56 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitNormalInterfaceDeclaration(Java8Parser.NormalInterfaceDeclarationContext ctx) {
+    public Void visitTypeArguments(TypeArgumentsContext ctx) {
+        write("<");
+        visitTypeArgumentList(ctx.typeArgumentList());
+        write(">");
+        return null;
+    }
+
+    @Override
+    public Void visitTypeArgumentList(TypeArgumentListContext ctx) {
+        boolean isFirst = true;
+
+        for (TypeArgumentContext param : ctx.typeArgument()) {
+            if (!isFirst) {
+                write(", ");
+            }
+            visitTypeArgument(param);
+            isFirst = false;
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitTypeVariable(TypeVariableContext ctx) {
+        write(ctx.Identifier().getText());
+        return null;
+    }
+
+    @Override
+    public Void visitClassType_lfno_classOrInterfaceType(ClassType_lfno_classOrInterfaceTypeContext ctx) {
+        write(ctx.Identifier().getText());
+        if (ctx.typeArguments() != null) {
+            visitTypeArguments(ctx.typeArguments());
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitClassType_lf_classOrInterfaceType(ClassType_lf_classOrInterfaceTypeContext ctx) {
+        write(".");
+        write(ctx.Identifier().getText());
+        if (ctx.typeArguments() != null) {
+            visitTypeArguments(ctx.typeArguments());
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitNormalInterfaceDeclaration(NormalInterfaceDeclarationContext ctx) {
         if (hasModifier(ctx.interfaceModifier(), "public")) {
-            write("public ");
+            write("shared ");
         }
         if (hasModifier(ctx.interfaceModifier(), "static")) { //TODO: or if it is any nested interface!!!
             write("static ");
@@ -433,9 +571,9 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         write("interface ");
 
         String identifier = ctx.Identifier().getText();
-        identifier = Character.toUpperCase(identifier.charAt(0)) + identifier.substring(1);
+		identifier = Character.toUpperCase(identifier.charAt(0)) + identifier.substring(1);
 
-        write(identifier); // TODO uppercase first letter
+		write(identifier); // TODO uppercase first letter
         if (ctx.typeParameters() != null) {
             visitTypeParameters(ctx.typeParameters());
         }
@@ -448,13 +586,13 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitInterfaceMethodDeclaration(Java8Parser.InterfaceMethodDeclarationContext ctx) {
-        write("public ");
+    public Void visitInterfaceMethodDeclaration(InterfaceMethodDeclarationContext ctx) {
+        write("shared ");
 
         if (hasModifier(ctx.interfaceMethodModifier(), "default")) {
             write("default ");
         } else {
-//            write("formal ");
+            write("formal ");
         }
 
         visitMethodHeader(ctx.methodHeader());
@@ -462,11 +600,10 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return null;
     }
 
-
     @Override
-    public Void visitInterfaceBody(Java8Parser.InterfaceBodyContext ctx) {
+    public Void visitInterfaceBody(InterfaceBodyContext ctx) {
         write(" {\n");
-        for (Java8Parser.InterfaceMemberDeclarationContext decl : ctx.interfaceMemberDeclaration()) {
+        for (InterfaceMemberDeclarationContext decl : ctx.interfaceMemberDeclaration()) {
             visitInterfaceMemberDeclaration(decl);
         }
         write("}\n");
@@ -474,17 +611,17 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitExtendsInterfaces(Java8Parser.ExtendsInterfacesContext ctx) {
-        write(" extends ");
+    public Void visitExtendsInterfaces(ExtendsInterfacesContext ctx) {
+        write(" satisfies ");
         return super.visitExtendsInterfaces(ctx);
     }
 
     @Override
-    public Void visitConstructorDeclaration(Java8Parser.ConstructorDeclarationContext ctx) {
-        write("public ");
+    public Void visitConstructorDeclaration(ConstructorDeclarationContext ctx) {
+        write("shared ");
         visitConstructorDeclarator(ctx.constructorDeclarator());
 
-        Java8Parser.ExplicitConstructorInvocationContext child =
+        ExplicitConstructorInvocationContext child =
                 ctx.constructorBody().explicitConstructorInvocation();
 
         if(child != null) {
@@ -507,7 +644,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
 
     @Override
     public Void visitExplicitConstructorInvocation(
-            Java8Parser.ExplicitConstructorInvocationContext ctx) {
+            ExplicitConstructorInvocationContext ctx) {
         for(ParseTree c : ctx.children) {
             if(c.getText().equals("super")) {
                 return null;
@@ -518,7 +655,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitConstructorDeclarator(Java8Parser.ConstructorDeclaratorContext ctx) {
+    public Void visitConstructorDeclarator(ConstructorDeclaratorContext ctx) {
         write("new ");
         // TODO? name constructor
         write("(");
@@ -530,7 +667,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitConstructorBody(Java8Parser.ConstructorBodyContext ctx) {
+    public Void visitConstructorBody(ConstructorBodyContext ctx) {
         write(" {\n");
         super.visitConstructorBody(ctx);
         write("}\n\n");
@@ -538,7 +675,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitMethodInvocation(Java8Parser.MethodInvocationContext ctx) {
+    public Void visitMethodInvocation(MethodInvocationContext ctx) {
         String name = null;
 
         if (ctx.methodName() != null) {
@@ -564,11 +701,11 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         }
 
         if (name != null) {
-/*            switch (name) {
+            switch (name) {
                 case "System.out.println":
                     name = "print";
                     break;
-            }*/
+            }
 
             write(escapeIdentifier(name, true));
         } else {
@@ -602,7 +739,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitMethodInvocation_lfno_primary(Java8Parser.MethodInvocation_lfno_primaryContext ctx) {
+    public Void visitMethodInvocation_lfno_primary(MethodInvocation_lfno_primaryContext ctx) {
         String prefix = "";
         String methodName = "";
 
@@ -625,7 +762,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
 
         if ((prefix + methodName).equals("System.out.println")) {
             prefix = "";
-            methodName = "System.out.println";
+            methodName = "print";
         }
 
         write(prefix);
@@ -639,9 +776,9 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
             }
             write(escapeIdentifier(property, true));
         } else if ("toString".equals(methodName) && ctx.argumentList() == null) {
-            write("toString");
+            write("string");
         } else if ("hashCode".equals(methodName) && ctx.argumentList() == null) {
-            write("hashCode");
+            write("hash");
         } else {
             write(escapeIdentifier(methodName, true));
             write("(");
@@ -655,7 +792,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitMethodInvocation_lf_primary(Java8Parser.MethodInvocation_lf_primaryContext ctx) {
+    public Void visitMethodInvocation_lf_primary(MethodInvocation_lf_primaryContext ctx) {
         String methodName = "";
 
         write(".");
@@ -677,9 +814,9 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
             }
             write(escapeIdentifier(property, true));
         } else if ("toString".equals(methodName) && ctx.argumentList() == null) {
-            write("toString");
+            write("string");
         } else if ("hashCode".equals(methodName) && ctx.argumentList() == null) {
-            write("hashCode");
+            write("hash");
         } else {
             write(escapeIdentifier(ctx.Identifier().getText(), true));
             write("(");
@@ -691,9 +828,8 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return null;
     }
 
-
     @Override
-    public Void visitLiteral(Java8Parser.LiteralContext ctx) {
+    public Void visitLiteral(LiteralContext ctx) {
         if (ctx.FloatingPointLiteral() != null) {
             double d = Double.parseDouble(ctx.FloatingPointLiteral().getText());
             write(String.valueOf(d));
@@ -705,7 +841,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitReturnStatement(Java8Parser.ReturnStatementContext ctx) {
+    public Void visitReturnStatement(ReturnStatementContext ctx) {
         write("return ");
         if (ctx.expression() != null) {
             visitExpression(ctx.expression());
@@ -715,7 +851,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitThrowStatement(Java8Parser.ThrowStatementContext ctx) {
+    public Void visitThrowStatement(ThrowStatementContext ctx) {
         write("throw ");
         if (ctx.expression() != null) {
             visitExpression(ctx.expression());
@@ -725,15 +861,15 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitExpressionStatement(Java8Parser.ExpressionStatementContext ctx) {
+    public Void visitExpressionStatement(ExpressionStatementContext ctx) {
         super.visitExpressionStatement(ctx);
         write(";\n");
         return null;
     }
 
     @Override
-    public Void visitAssignment(Java8Parser.AssignmentContext ctx) {
-        Java8Parser.ArrayAccessContext array = ctx.leftHandSide().arrayAccess();
+    public Void visitAssignment(AssignmentContext ctx) {
+        ArrayAccessContext array = ctx.leftHandSide().arrayAccess();
 
         // Bypass array assignment to replace it with a.set(b, c)
         if (array != null) {
@@ -742,11 +878,11 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
             } else {
                 visitPrimaryNoNewArray_lfno_arrayAccess(array.primaryNoNewArray_lfno_arrayAccess());
             }
-//            write(".set(");
-//            visitExpression(array.expression().get(0));
-//            write(", ");
-//            visitExpression(ctx.expression());
-//            write(")");
+            write(".set(");
+            visitExpression(array.expression().get(0));
+            write(", ");
+            visitExpression(ctx.expression());
+            write(")");
         } else {
             super.visitAssignment(ctx);
         }
@@ -754,7 +890,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitArrayAccess_lfno_primary(Java8Parser.ArrayAccess_lfno_primaryContext ctx) {
+    public Void visitArrayAccess_lfno_primary(ArrayAccess_lfno_primaryContext ctx) {
         // Bypass array access to replace it with a.get(b)
         if (ctx.expressionName() != null) {
             visitExpressionName(ctx.expressionName());
@@ -769,7 +905,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitAssignmentOperator(Java8Parser.AssignmentOperatorContext ctx) {
+    public Void visitAssignmentOperator(AssignmentOperatorContext ctx) {
         write(" ");
         write(ctx.getText());
         write(" ");
@@ -777,57 +913,11 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitUnannArrayType(Java8Parser.UnannArrayTypeContext ctx) {
+    public Void visitUnannArrayType(UnannArrayTypeContext ctx) {
         if (ctx.unannPrimitiveType() != null) {
-            String type = ctx.unannPrimitiveType().getText();
-//            switch (type) {
-//                case "int":
-//                    ceylonType = "IntArray";
-//                    break;
-//                case "short":
-//                    ceylonType = "ShortArray";
-//                    break;
-//                case "boolean":
-//                    ceylonType = "BooleanArray";
-//                    break;
-//                case "byte":
-//                    ceylonType = "ByteArray";
-//                    break;
-//                case "long":
-//                    ceylonType = "LongArray";
-//                    break;
-//                case "float":
-//                    ceylonType = "FloatArray";
-//                    break;
-//                case "double":
-//                    ceylonType = "DoubleArray";
-//                    break;
-//                case "char":
-//                    ceylonType = "CharArray";
-//                    break;
-//                default:
-//                    ceylonType = "ObjectArray<" + type + ">";
-//                    break;
-//            }
-            write(type);
-        } else if (ctx.unannTypeVariable() != null) {
-            write( ctx.unannTypeVariable().Identifier().getText() );
-        } else {
-//            write("ObjectArray<");
-            visitUnannClassOrInterfaceType(ctx.unannClassOrInterfaceType());
-//            write(">");
-        }
-        return null;
-    }
-
-
-    @Override
-    public Void visitArrayCreationExpression(Java8Parser.ArrayCreationExpressionContext ctx) {
-        if (ctx.primitiveType() != null) {
             String ceylonType;
-            String type = ctx.primitiveType().getText();
-
-  /*          switch (type) {
+            String type = ctx.unannPrimitiveType().getText();
+            switch (type) {
                 case "int":
                     ceylonType = "IntArray";
                     break;
@@ -855,23 +945,69 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
                 default:
                     ceylonType = "ObjectArray<" + type + ">";
                     break;
-            }*/
-            write(type);
+            }
+            write(ceylonType);
+        } else if (ctx.unannTypeVariable() != null) {
+            write("ObjectArray<" + ctx.unannTypeVariable().Identifier().getText() + ">");
+        } else {
+            write("ObjectArray<");
+            visitUnannClassOrInterfaceType(ctx.unannClassOrInterfaceType());
+            write(">");
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitArrayCreationExpression(ArrayCreationExpressionContext ctx) {
+        if (ctx.primitiveType() != null) {
+            String ceylonType;
+            String type = ctx.primitiveType().getText();
+
+            switch (type) {
+                case "int":
+                    ceylonType = "IntArray";
+                    break;
+                case "short":
+                    ceylonType = "ShortArray";
+                    break;
+                case "boolean":
+                    ceylonType = "BooleanArray";
+                    break;
+                case "byte":
+                    ceylonType = "ByteArray";
+                    break;
+                case "long":
+                    ceylonType = "LongArray";
+                    break;
+                case "float":
+                    ceylonType = "FloatArray";
+                    break;
+                case "double":
+                    ceylonType = "DoubleArray";
+                    break;
+                case "char":
+                    ceylonType = "CharArray";
+                    break;
+                default:
+                    ceylonType = "ObjectArray<" + type + ">";
+                    break;
+            }
+            write(ceylonType);
             if (ctx.arrayInitializer() != null) {
-//                write(".with");
+                write(".with");
             }
         } else {
-//            write("ObjectArray<");
+            write("ObjectArray<");
             visitClassOrInterfaceType(ctx.classOrInterfaceType());
-//            write(">");
-//            if (ctx.arrayInitializer() != null) {
-//                write(".with");
-//            }
+            write(">");
+            if (ctx.arrayInitializer() != null) {
+                write(".with");
+            }
         }
         write("(");
 
         if(ctx.arrayInitializer() != null) {
-            visitArrayInitializer(ctx.arrayInitializer());
+        	visitArrayInitializer(ctx.arrayInitializer());
         } else if (ctx.dimExprs() != null) {
             visitDimExprs(ctx.dimExprs());
         } else {
@@ -883,34 +1019,33 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitArrayInitializer(Java8Parser.ArrayInitializerContext ctx) {
-        write("{");
-        if(ctx.variableInitializerList() != null)
-            visitVariableInitializerList(ctx.variableInitializerList());
-        write("}");
+    public Void visitArrayInitializer(ArrayInitializerContext ctx) {
+    	write("{");
+    	if(ctx.variableInitializerList() != null)
+    		visitVariableInitializerList(ctx.variableInitializerList());
+    	write("}");
 
-        return null;
-    }
-
-
-    @Override
-    public Void visitVariableInitializerList(Java8Parser.VariableInitializerListContext ctx) {
-        for (int i = 0; i < ctx.getChildCount(); i++) {
-            if(ctx.getChild(i) instanceof Java8Parser.VariableInitializerContext)
-                visitVariableInitializer((Java8Parser.VariableInitializerContext) ctx.getChild(i));
-            else
-                write(", ");
-        }
-
-        return null;
+    	return null;
     }
 
     @Override
-    public Void visitLocalVariableDeclarationStatement(Java8Parser.LocalVariableDeclarationStatementContext ctx) {
-        for (Java8Parser.VariableDeclaratorContext var : ctx.localVariableDeclaration().variableDeclaratorList().variableDeclarator()) {
+    public Void visitVariableInitializerList(VariableInitializerListContext ctx) {
+    	for (int i = 0; i < ctx.getChildCount(); i++) {
+    		if(ctx.getChild(i) instanceof VariableInitializerContext)
+    			visitVariableInitializer((VariableInitializerContext) ctx.getChild(i));
+    		else
+    			write(", ");
+    	}
+
+    	return null;
+    }
+
+    @Override
+    public Void visitLocalVariableDeclarationStatement(LocalVariableDeclarationStatementContext ctx) {
+        for (VariableDeclaratorContext var : ctx.localVariableDeclaration().variableDeclaratorList().variableDeclarator()) {
             boolean shouldUseAssert = var.variableInitializer() != null && isCastOutsideOfInstanceof(ctx.localVariableDeclaration(), var);
 
-            ScopeTree.Node n = scopeTree.getNode(var.variableDeclaratorId(), scopeTree.root);
+            Node n = scopeTree.getNode(var.variableDeclaratorId(), scopeTree.root);
 
             if (!shouldUseAssert && useValues && var.variableInitializer() != null && !n.optional) {
                 write("value");
@@ -925,7 +1060,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
                 visitUnannType(ctx.localVariableDeclaration().unannType());
 
                 if(n.optional)
-                    write("?");
+                	write("?");
             }
             write(" ");
 
@@ -946,13 +1081,12 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return null;
     }
 
-
     @Override
-    public Void visitLocalVariableDeclaration(Java8Parser.LocalVariableDeclarationContext ctx) {
-        for (Java8Parser.VariableDeclaratorContext var : ctx.variableDeclaratorList().variableDeclarator()) {
-            Java8Parser.VariableDeclaratorIdContext context = var.variableDeclaratorId();
+    public Void visitLocalVariableDeclaration(LocalVariableDeclarationContext ctx) {
+        for (VariableDeclaratorContext var : ctx.variableDeclaratorList().variableDeclarator()) {
+            VariableDeclaratorIdContext context = var.variableDeclaratorId();
 
-            ScopeTree.Node n = scopeTree.getNode(context, scopeTree.root);
+            Node n = scopeTree.getNode(context, scopeTree.root);
 
             if (useValues && var.variableInitializer() != null && !n.optional) {
                 write("value");
@@ -982,12 +1116,12 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitClassInstanceCreationExpression_lfno_primary(Java8Parser.ClassInstanceCreationExpression_lfno_primaryContext ctx) {
+    public Void visitClassInstanceCreationExpression_lfno_primary(ClassInstanceCreationExpression_lfno_primaryContext ctx) {
         boolean isObjectSatisfying = false;
         if (ctx.classBody() != null) {
             if (ctx.argumentList() == null) {
                 isObjectSatisfying = true;
-                write("object extends ");
+                write("object satisfies ");
             } else {
                 write("object extends ");
             }
@@ -1019,9 +1153,8 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return null;
     }
 
-
     @Override
-    public Void visitConditionalExpression(Java8Parser.ConditionalExpressionContext ctx) {
+    public Void visitConditionalExpression(ConditionalExpressionContext ctx) {
         if (isTernaryOperator(ctx)) {
             // ternary operator
             write("if (");
@@ -1038,23 +1171,22 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitExpressionName(Java8Parser.ExpressionNameContext ctx) {
+    public Void visitExpressionName(ExpressionNameContext ctx) {
         if (ctx.ambiguousName() != null) {
             visitAmbiguousName(ctx.ambiguousName());
             write(".");
         }
-        boolean shouldBeLc = ctx.getParent() instanceof Java8Parser.ArrayAccessContext
-                || ctx.getParent() instanceof Java8Parser.ArrayAccess_lfno_primaryContext
-                || ctx.getParent() instanceof Java8Parser.PostfixExpressionContext;
+        boolean shouldBeLc = ctx.getParent() instanceof ArrayAccessContext
+                || ctx.getParent() instanceof ArrayAccess_lfno_primaryContext
+                || ctx.getParent() instanceof PostfixExpressionContext;
 
         write(escapeIdentifier(ctx.Identifier().getText(), shouldBeLc));
 
         return null;
     }
 
-
     @Override
-    public Void visitAmbiguousName(Java8Parser.AmbiguousNameContext ctx) {
+    public Void visitAmbiguousName(AmbiguousNameContext ctx) {
         if (ctx.ambiguousName() != null) {
             visitAmbiguousName(ctx.ambiguousName());
             write(".");
@@ -1064,22 +1196,21 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitArgumentList(Java8Parser.ArgumentListContext ctx) {
+    public Void visitArgumentList(ArgumentListContext ctx) {
         for (int i = 0; i < ctx.getChildCount(); i++) {
-            if (!(ctx.getChild(i) instanceof Java8Parser.ExpressionContext)) {
+            if (!(ctx.getChild(i) instanceof ExpressionContext)) {
                 continue;
             }
             if (i > 0) {
                 write(", ");
             }
-            visitExpression((Java8Parser.ExpressionContext) ctx.getChild(i));
+            visitExpression((ExpressionContext) ctx.getChild(i));
         }
         return null;
     }
 
-
     @Override
-    public Void visitIfThenStatement(Java8Parser.IfThenStatementContext ctx) {
+    public Void visitIfThenStatement(IfThenStatementContext ctx) {
         write("if (");
         visitExpression(ctx.expression());
         write(") ");
@@ -1095,7 +1226,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitIfThenElseStatement(Java8Parser.IfThenElseStatementContext ctx) {
+    public Void visitIfThenElseStatement(IfThenElseStatementContext ctx) {
         write("if (");
         visitExpression(ctx.expression());
         write(") ");
@@ -1119,9 +1250,8 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return null;
     }
 
-
     @Override
-    public Void visitBasicForStatement(Java8Parser.BasicForStatementContext ctx) {
+    public Void visitBasicForStatement(BasicForStatementContext ctx) {
         // TODO can we detect for(i = 0; i < n; i++) and transform it to for (i in 0..n) ??
         if (ctx.forInit() != null) {
             visitForInit(ctx.forInit());
@@ -1145,7 +1275,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitEnhancedForStatement(Java8Parser.EnhancedForStatementContext ctx) {
+    public Void visitEnhancedForStatement(EnhancedForStatementContext ctx) {
         write("for (");
         if (!useValues) {
             visitUnannType(ctx.unannType());
@@ -1167,7 +1297,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitSwitchStatement(Java8Parser.SwitchStatementContext ctx) {
+    public Void visitSwitchStatement(SwitchStatementContext ctx) {
         write("switch (");
         visitExpression(ctx.expression());
         write(")\n");
@@ -1175,15 +1305,15 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitSwitchBlock(Java8Parser.SwitchBlockContext ctx) {
+    public Void visitSwitchBlock(SwitchBlockContext ctx) {
         boolean hasElse = false;
-        for (Java8Parser.SwitchBlockStatementGroupContext group : ctx.switchBlockStatementGroup()) {
+        for (SwitchBlockStatementGroupContext group : ctx.switchBlockStatementGroup()) {
             // TODO transform `case a: case b:` to `case (a|b)`
-            Java8Parser.SwitchLabelContext firstLabel = group.switchLabels().switchLabel(0);
+            SwitchLabelContext firstLabel = group.switchLabels().switchLabel(0);
             if (firstLabel.getChild(0).getText().equals("case")) {
                 write("case (");
                 boolean first = true;
-                for (Java8Parser.SwitchLabelContext label : group.switchLabels().switchLabel()) {
+                for (SwitchLabelContext label : group.switchLabels().switchLabel()) {
                     if (first) {
                         first = false;
                     }
@@ -1212,7 +1342,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitBlock(Java8Parser.BlockContext ctx) {
+    public Void visitBlock(BlockContext ctx) {
         write("{\n");
         super.visitBlock(ctx);
         if (!isBlockInDoWhile(ctx)) {
@@ -1222,7 +1352,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitDoStatement(Java8Parser.DoStatementContext ctx) {
+    public Void visitDoStatement(DoStatementContext ctx) {
         write("while (true) ");
         if (!isBlock(ctx.statement())) {
             write("{\n");
@@ -1236,49 +1366,47 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitPrimaryNoNewArray(Java8Parser.PrimaryNoNewArrayContext ctx) {
-        if(ctx.getChild(2) != null && ctx.getChild(2).getText().equals("class"))
-//            write("`" + ctx.getChild(0).getText() + "`");
-            write( ctx.getChild(0).getText() + ".class");
-        else
-            switch (ctx.getChild(0).getText()) {
-                case "this":
-                    write("this");
-                    break;
-                case "(":
-                    write("(");
-                    visitExpression(ctx.expression());
-                    write(")");
-                    break;
-                default:
-                    super.visitPrimaryNoNewArray(ctx);
-            }
+    public Void visitPrimaryNoNewArray(PrimaryNoNewArrayContext ctx) {
+    	if(ctx.getChild(2) != null && ctx.getChild(2).getText().equals("class"))
+    		write("`" + ctx.getChild(0).getText() + "`");
+    	else
+	        switch (ctx.getChild(0).getText()) {
+	            case "this":
+	                write("this");
+	                break;
+	            case "(":
+	                write("(");
+	                visitExpression(ctx.expression());
+	                write(")");
+	                break;
+	            default:
+	                super.visitPrimaryNoNewArray(ctx);
+	        }
         return null;
     }
 
     @Override
-    public Void visitPrimaryNoNewArray_lfno_primary(Java8Parser.PrimaryNoNewArray_lfno_primaryContext ctx) {
-        if(ctx.getChild(2) != null && ctx.getChild(2).getText().equals("class"))
-//            write("`" + ctx.getChild(0).getText() + "`");
-            write(ctx.getChild(0).getText() + ".class");
-        else
-            switch (ctx.getChild(0).getText()) {
-                case "this":
-                    write("this");
-                    break;
-                case "(":
-                    write("(");
-                    visitExpression(ctx.expression());
-                    write(")");
-                    break;
-                default:
-                    super.visitPrimaryNoNewArray_lfno_primary(ctx);
-            }
+    public Void visitPrimaryNoNewArray_lfno_primary(PrimaryNoNewArray_lfno_primaryContext ctx) {
+    	if(ctx.getChild(2) != null && ctx.getChild(2).getText().equals("class"))
+    		write("`" + ctx.getChild(0).getText() + "`");
+    	else
+    		switch (ctx.getChild(0).getText()) {
+            	case "this":
+            		write("this");
+            		break;
+	            case "(":
+	                write("(");
+	                visitExpression(ctx.expression());
+	                write(")");
+	                break;
+	            default:
+	                super.visitPrimaryNoNewArray_lfno_primary(ctx);
+	        }
         return null;
     }
 
     @Override
-    public Void visitConditionalOrExpression(Java8Parser.ConditionalOrExpressionContext ctx) {
+    public Void visitConditionalOrExpression(ConditionalOrExpressionContext ctx) {
         if (ctx.conditionalOrExpression() != null) {
             visitConditionalOrExpression(ctx.conditionalOrExpression());
             write(" || ");
@@ -1287,7 +1415,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitConditionalAndExpression(Java8Parser.ConditionalAndExpressionContext ctx) {
+    public Void visitConditionalAndExpression(ConditionalAndExpressionContext ctx) {
         if (ctx.conditionalAndExpression() != null) {
             visitConditionalAndExpression(ctx.conditionalAndExpression());
 
@@ -1301,7 +1429,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitInclusiveOrExpression(Java8Parser.InclusiveOrExpressionContext ctx) {
+    public Void visitInclusiveOrExpression(InclusiveOrExpressionContext ctx) {
         if (ctx.inclusiveOrExpression() != null) {
             visitInclusiveOrExpression(ctx.inclusiveOrExpression());
             write(" | ");
@@ -1310,7 +1438,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitExclusiveOrExpression(Java8Parser.ExclusiveOrExpressionContext ctx) {
+    public Void visitExclusiveOrExpression(ExclusiveOrExpressionContext ctx) {
         if (ctx.exclusiveOrExpression() != null) {
             visitExclusiveOrExpression(ctx.exclusiveOrExpression());
             write(" ^ ");
@@ -1319,7 +1447,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitAndExpression(Java8Parser.AndExpressionContext ctx) {
+    public Void visitAndExpression(AndExpressionContext ctx) {
         if (ctx.andExpression() != null) {
             visitAndExpression(ctx.andExpression());
             write(" & ");
@@ -1328,7 +1456,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitEqualityExpression(Java8Parser.EqualityExpressionContext ctx) {
+    public Void visitEqualityExpression(EqualityExpressionContext ctx) {
         if (ctx.equalityExpression() != null) {
             String operator = ctx.getChild(1).getText();
             if (ctx.relationalExpression().getText().equals("null")) {
@@ -1354,20 +1482,20 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitRelationalExpression(Java8Parser.RelationalExpressionContext ctx) {
+    public Void visitRelationalExpression(RelationalExpressionContext ctx) {
         if (ctx.relationalExpression() != null) {
             String operator = ctx.getChild(1).getText();
             if (operator.equals("instanceof")) {
                 if (ctx.relationalExpression().getText().matches("\\w+") && isInIfCondition(ctx)
-                        && !isExpression(ctx)) {
-                    write("instanceof ");
+                		&& !isExpression(ctx)) {
+                    write("is ");
                     visitReferenceType(ctx.referenceType());
                     write(" ");
                     visitRelationalExpression(ctx.relationalExpression());
                 }
                 else {
                     visitRelationalExpression(ctx.relationalExpression());
-                    write(" instanceof ");
+                    write(" is ");
                     visitReferenceType(ctx.referenceType());
                 }
                 return null;
@@ -1375,7 +1503,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
 
             visitRelationalExpression(ctx.relationalExpression());
             write(" ");
-            write(operator.replace("instanceof", "instanceof"));
+            write(operator.replace("instanceof", "is"));
             write(" ");
         }
 
@@ -1388,7 +1516,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitShiftExpression(Java8Parser.ShiftExpressionContext ctx) {
+    public Void visitShiftExpression(ShiftExpressionContext ctx) {
         if (ctx.shiftExpression() != null) {
             visitShiftExpression(ctx.shiftExpression());
             write(" << ");
@@ -1397,7 +1525,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitAdditiveExpression(Java8Parser.AdditiveExpressionContext ctx) {
+    public Void visitAdditiveExpression(AdditiveExpressionContext ctx) {
         if (ctx.additiveExpression() != null) {
             visitAdditiveExpression(ctx.additiveExpression());
             write(" " + ctx.getChild(1).getText() + " ");
@@ -1406,7 +1534,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitMultiplicativeExpression(Java8Parser.MultiplicativeExpressionContext ctx) {
+    public Void visitMultiplicativeExpression(MultiplicativeExpressionContext ctx) {
         if (ctx.multiplicativeExpression() != null) {
             visitMultiplicativeExpression(ctx.multiplicativeExpression());
             write(" " + ctx.getChild(1).getText() + " ");
@@ -1415,7 +1543,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitUnaryExpression(Java8Parser.UnaryExpressionContext ctx) {
+    public Void visitUnaryExpression(UnaryExpressionContext ctx) {
         String op = ctx.getChild(0).getText();
         if (op.equals("+") || op.equals("-")) {
             write(op);
@@ -1426,33 +1554,35 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitPreIncrementExpression(Java8Parser.PreIncrementExpressionContext ctx) {
+    public Void visitPreIncrementExpression(PreIncrementExpressionContext ctx) {
         write("++");
         return super.visitPreIncrementExpression(ctx);
     }
 
     @Override
-    public Void visitPreDecrementExpression(Java8Parser.PreDecrementExpressionContext ctx) {
+    public Void visitPreDecrementExpression(PreDecrementExpressionContext ctx) {
         write("--");
         return super.visitPreDecrementExpression(ctx);
     }
 
     @Override
-    public Void visitPostIncrementExpression(Java8Parser.PostIncrementExpressionContext ctx) {
+    public Void visitPostIncrementExpression(PostIncrementExpressionContext ctx) {
         super.visitPostIncrementExpression(ctx);
         write("++");
         return null;
     }
 
     @Override
-    public Void visitPostIncrementExpression_lf_postfixExpression(Java8Parser.PostIncrementExpression_lf_postfixExpressionContext ctx) {
+    public Void visitPostIncrementExpression_lf_postfixExpression(
+            PostIncrementExpression_lf_postfixExpressionContext ctx) {
         super.visitPostIncrementExpression_lf_postfixExpression(ctx);
         write("++");
         return null;
     }
 
     @Override
-    public Void visitPostDecrementExpression(Java8Parser.PostDecrementExpressionContext ctx) {
+    public Void visitPostDecrementExpression(
+            PostDecrementExpressionContext ctx) {
         super.visitPostDecrementExpression(ctx);
         write("--");
         return null;
@@ -1460,14 +1590,15 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
 
     @Override
     public Void visitPostDecrementExpression_lf_postfixExpression(
-            Java8Parser.PostDecrementExpression_lf_postfixExpressionContext ctx) {
+            PostDecrementExpression_lf_postfixExpressionContext ctx) {
         super.visitPostDecrementExpression_lf_postfixExpression(ctx);
         write("--");
         return null;
     }
 
     @Override
-    public Void visitUnaryExpressionNotPlusMinus(Java8Parser.UnaryExpressionNotPlusMinusContext ctx) {
+    public Void visitUnaryExpressionNotPlusMinus(
+            UnaryExpressionNotPlusMinusContext ctx) {
         if (ctx.getChild(0).getText().equals("!")) {
             write("!");
         }
@@ -1475,14 +1606,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitCastExpression(Java8Parser.CastExpressionContext ctx) {
-        if (ctx.referenceType() != null){
-            write("(");
-            write(ctx.referenceType().classOrInterfaceType().classType_lfno_classOrInterfaceType().Identifier().getText());
-            write(")");
-            visitReferenceType(ctx.referenceType());
-        }
-
+    public Void visitCastExpression(CastExpressionContext ctx) {
         if (ctx.unaryExpression() != null) {
             visitUnaryExpression(ctx.unaryExpression());
         }
@@ -1492,14 +1616,12 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         if (ctx.lambdaExpression() != null) {
             visitLambdaExpression(ctx.lambdaExpression());
         }
-
-
         return null;
     }
 
 
     @Override
-    public Void visitLambdaExpression(Java8Parser.LambdaExpressionContext ctx) {
+    public Void visitLambdaExpression(LambdaExpressionContext ctx) {
         visitLambdaParameters(ctx.lambdaParameters());
         if (ctx.lambdaBody().block() == null) {
             write(" => ");
@@ -1509,7 +1631,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitLambdaParameters(Java8Parser.LambdaParametersContext ctx) {
+    public Void visitLambdaParameters(LambdaParametersContext ctx) {
         write("(");
         if (ctx.Identifier() != null) {
             write(ctx.Identifier().getText());
@@ -1520,7 +1642,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitInferredFormalParameterList(Java8Parser.InferredFormalParameterListContext ctx) {
+    public Void visitInferredFormalParameterList(InferredFormalParameterListContext ctx) {
         boolean isFirst = true;
         for (TerminalNode i : ctx.Identifier()) {
             if (!isFirst) {
@@ -1534,11 +1656,10 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return null;
     }
 
-
     @Override
-    public Void visitEnumDeclaration(Java8Parser.EnumDeclarationContext ctx) {
+    public Void visitEnumDeclaration(EnumDeclarationContext ctx) {
         if (hasModifier(ctx.classModifier(), "public")) {
-            write("public ");
+            write("shared ");
         }
         if (hasModifier(ctx.classModifier(), "static")) {
             write("static ");
@@ -1552,9 +1673,9 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitEnumBody(Java8Parser.EnumBodyContext ctx) {
+    public Void visitEnumBody(EnumBodyContext ctx) {
         write(" {\n");
-//        write("shared actual String string;\n");
+        write("shared actual String string;\n");
         if (ctx.enumBodyDeclarations() != null) {
             for (ClassBodyDeclarationContext classBody : ctx
                     .enumBodyDeclarations().classBodyDeclaration()) {
@@ -1575,9 +1696,8 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return null;
     }
 
-
     private void visitEnumConstructorDeclaration(
-            Java8Parser.ConstructorDeclarationContext ctx) {
+            ConstructorDeclarationContext ctx) {
         write("abstract new \\i");
         write(ctx.constructorDeclarator().simpleTypeName().getText());
         write("(String string, ");
@@ -1593,10 +1713,9 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         write("}\n\n");
     }
 
-
     @Override
-    public Void visitEnumConstant(Java8Parser.EnumConstantContext ctx) {
-        write("public new \\i");
+    public Void visitEnumConstant(EnumConstantContext ctx) {
+        write("shared new \\i");
         write(ctx.Identifier().getText());
         if (ctx.argumentList() == null) {
             write(" { string = \"");
@@ -1604,7 +1723,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
             write("\"; }\n");
         } else {
             write(" extends \\i");
-            write(((Java8Parser.EnumDeclarationContext) ctx.getParent().getParent()
+            write(((EnumDeclarationContext) ctx.getParent().getParent()
                     .getParent()).Identifier().getText());
             write("(\"");
             write(ctx.Identifier().getText());
@@ -1616,15 +1735,15 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitFieldDeclaration(Java8Parser.FieldDeclarationContext ctx) {
-        for (Java8Parser.VariableDeclaratorContext var : ctx.variableDeclaratorList()
+    public Void visitFieldDeclaration(FieldDeclarationContext ctx) {
+        for (VariableDeclaratorContext var : ctx.variableDeclaratorList()
                 .variableDeclarator()) {
-            Java8Parser.VariableDeclaratorIdContext context = var.variableDeclaratorId();
+            VariableDeclaratorIdContext context = var.variableDeclaratorId();
 
-            ScopeTree.Node n = scopeTree.getNode(context, scopeTree.root);
+            Node n = scopeTree.getNode(context, scopeTree.root);
 
             if (hasModifier(ctx.fieldModifier(), "public")) {
-                write("public ");
+                write("shared ");
             }
             if (hasModifier(ctx.fieldModifier(), "static")) {
                 write("static ");
@@ -1641,7 +1760,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
                 visitUnannType(ctx.unannType());
 
                 if(n.optional)
-                    write("?");
+                	write("?");
             }
             write(" ");
 
@@ -1657,9 +1776,8 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return null;
     }
 
-
     @Override
-    public Void visitFieldAccess(Java8Parser.FieldAccessContext ctx) {
+    public Void visitFieldAccess(FieldAccessContext ctx) {
         visitPrimary(ctx.primary());
         write(".");
         write(escapeIdentifier(ctx.Identifier().getText(), true));
@@ -1667,15 +1785,14 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitFieldAccess_lf_primary(Java8Parser.FieldAccess_lf_primaryContext ctx) {
+    public Void visitFieldAccess_lf_primary(FieldAccess_lf_primaryContext ctx) {
         write(".");
         write(escapeIdentifier(ctx.Identifier().getText(), true));
         return null;
     }
 
-
     @Override
-    public Void visitTryStatement(Java8Parser.TryStatementContext ctx) {
+    public Void visitTryStatement(TryStatementContext ctx) {
         if (ctx.tryWithResourcesStatement() == null) {
             write("try ");
         }
@@ -1683,7 +1800,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitCatchClause(Java8Parser.CatchClauseContext ctx) {
+    public Void visitCatchClause(CatchClauseContext ctx) {
         write("catch (");
         visitCatchFormalParameter(ctx.catchFormalParameter());
         write(") ");
@@ -1692,13 +1809,13 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
 
     @Override
     public Void visitTryWithResourcesStatement(
-            Java8Parser.TryWithResourcesStatementContext ctx) {
+            TryWithResourcesStatementContext ctx) {
         write("try ");
         return super.visitTryWithResourcesStatement(ctx);
     }
 
     @Override
-    public Void visitResourceSpecification(Java8Parser.ResourceSpecificationContext ctx) {
+    public Void visitResourceSpecification(ResourceSpecificationContext ctx) {
         write("(");
         visitResourceList(ctx.resourceList());
         write(") ");
@@ -1706,7 +1823,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitUnannClassType(Java8Parser.UnannClassTypeContext ctx) {
+    public Void visitUnannClassType(UnannClassTypeContext ctx) {
         if (ctx.unannClassOrInterfaceType() != null) {
             visitUnannClassOrInterfaceType(ctx.unannClassOrInterfaceType());
             write(".");
@@ -1721,9 +1838,9 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitResourceList(Java8Parser.ResourceListContext ctx) {
+    public Void visitResourceList(ResourceListContext ctx) {
         int i = 0;
-        for (Java8Parser.ResourceContext resource : ctx.resource()) {
+        for (ResourceContext resource : ctx.resource()) {
             if (i > 0) {
                 write("; ");
             }
@@ -1734,7 +1851,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitResource(Java8Parser.ResourceContext ctx) {
+    public Void visitResource(ResourceContext ctx) {
         visitUnannType(ctx.unannType());
         write(" ");
         visitVariableDeclaratorId(ctx.variableDeclaratorId());
@@ -1743,7 +1860,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     @Override
-    public Void visitCatchType(Java8Parser.CatchTypeContext ctx) {
+    public Void visitCatchType(CatchTypeContext ctx) {
         visitUnannClassType(ctx.unannClassType());
 
         for (ClassTypeContext ct : ctx.classType()) {
@@ -1754,27 +1871,26 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return null;
     }
 
-
     @Override
-    public Void visitVariableDeclaratorId(Java8Parser.VariableDeclaratorIdContext ctx) {
+    public Void visitVariableDeclaratorId(VariableDeclaratorIdContext ctx) {
         write(escapeIdentifier(ctx.Identifier().getText(), true));
         return null;
     }
 
     @Override
-    public Void visitFinally_(Java8Parser.Finally_Context ctx) {
+    public Void visitFinally_(Finally_Context ctx) {
         write("finally ");
         return super.visitFinally_(ctx);
     }
 
     @Override
-    public Void visitWhileStatement(Java8Parser.WhileStatementContext ctx) {
+    public Void visitWhileStatement(WhileStatementContext ctx) {
         write("while (");
         visitExpression(ctx.expression());
         write(") ");
         if (ctx.statement().statementWithoutTrailingSubstatement() != null
                 && ctx.statement().statementWithoutTrailingSubstatement()
-                .block() != null) {
+                        .block() != null) {
             visitStatement(ctx.statement());
         } else {
             write("{\n");
@@ -1784,18 +1900,17 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return null;
     }
 
-
     @Override
     public Void visitWhileStatementNoShortIf(
-            Java8Parser.WhileStatementNoShortIfContext ctx) {
+            WhileStatementNoShortIfContext ctx) {
         write("while (");
         visitExpression(ctx.expression());
         write(") ");
         if (ctx.statementNoShortIf()
                 .statementWithoutTrailingSubstatement() != null
                 && ctx.statementNoShortIf()
-                .statementWithoutTrailingSubstatement()
-                .block() != null) {
+                        .statementWithoutTrailingSubstatement()
+                        .block() != null) {
             visitStatementNoShortIf(ctx.statementNoShortIf());
         } else {
             write("{\n");
@@ -1805,34 +1920,31 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return null;
     }
 
-
     @Override
-    public Void visitBreakStatement(Java8Parser.BreakStatementContext ctx) {
-        if (parent(ctx, 6) instanceof Java8Parser.SwitchBlockContext) {
+    public Void visitBreakStatement(BreakStatementContext ctx) {
+        if (parent(ctx, 6) instanceof SwitchBlockContext) {
             return null;
         }
         write("break;\n");
         return null;
     }
 
-
     @Override
-    public Void visitContinueStatement(Java8Parser.ContinueStatementContext ctx) {
+    public Void visitContinueStatement(ContinueStatementContext ctx) {
         write("continue;\n");
         return null;
     }
 
-
     @Override
     public Void visitStatementExpressionList(
-            Java8Parser.StatementExpressionListContext ctx) {
+            StatementExpressionListContext ctx) {
         super.visitStatementExpressionList(ctx);
         write(";\n");
         return null;
     }
 
     @Override
-    public Void visitAssertStatement(Java8Parser.AssertStatementContext ctx) {
+    public Void visitAssertStatement(AssertStatementContext ctx) {
         if (ctx.expression().size() > 1) {
             if (!ctx.expression(1).getText().matches("\"[^\"]*\"")) {
                 write("// ");
@@ -1847,33 +1959,32 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return null;
     }
 
-
-    private boolean isBlock(Java8Parser.StatementContext ctx) {
+    private boolean isBlock(StatementContext ctx) {
         return ctx.statementWithoutTrailingSubstatement() != null
                 && ctx.statementWithoutTrailingSubstatement().block() != null;
     }
 
-    private boolean isIf(Java8Parser.StatementContext ctx) {
+    private boolean isIf(StatementContext ctx) {
         return ctx.ifThenStatement() != null
                 || ctx.ifThenElseStatement() != null;
     }
 
-    private boolean isBlock(Java8Parser.StatementNoShortIfContext ctx) {
+    private boolean isBlock(StatementNoShortIfContext ctx) {
         return ctx.statementWithoutTrailingSubstatement() != null
                 && ctx.statementWithoutTrailingSubstatement().block() != null;
     }
 
-    private boolean isBlockInDoWhile(Java8Parser.BlockContext block) {
+    private boolean isBlockInDoWhile(BlockContext block) {
         return block
-                .getParent() instanceof Java8Parser.StatementWithoutTrailingSubstatementContext
-                && block.getParent().getParent() instanceof Java8Parser.StatementContext
+                .getParent() instanceof StatementWithoutTrailingSubstatementContext
+                && block.getParent().getParent() instanceof StatementContext
                 && (block.getParent().getParent()
-                .getParent() instanceof Java8Parser.DoStatementContext
-                || block.getParent().getParent()
-                .getParent() instanceof Java8Parser.BasicForStatementContext);
+                        .getParent() instanceof DoStatementContext
+                        || block.getParent().getParent()
+                                .getParent() instanceof BasicForStatementContext);
     }
 
-    private boolean isExpression(Java8Parser.RelationalExpressionContext ctx) {
+    private boolean isExpression(RelationalExpressionContext ctx) {
         for (int i = 1; i <= 8; i++) {
             if (parent(ctx, i).getChildCount() > 1) {
                 return true;
@@ -1883,40 +1994,39 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return false;
     }
 
-    private boolean isInIfCondition(Java8Parser.ConditionalAndExpressionContext ctx) {
-        while (ctx.getParent() instanceof Java8Parser.ConditionalAndExpressionContext) {
-            ctx = (Java8Parser.ConditionalAndExpressionContext) ctx.getParent();
+    private boolean isInIfCondition(ConditionalAndExpressionContext ctx) {
+        while (ctx.getParent() instanceof ConditionalAndExpressionContext) {
+            ctx = (ConditionalAndExpressionContext) ctx.getParent();
         }
-        return parent(ctx, 1) instanceof Java8Parser.ConditionalOrExpressionContext
-                && parent(ctx, 2) instanceof Java8Parser.ConditionalExpressionContext
+        return parent(ctx, 1) instanceof ConditionalOrExpressionContext
+                && parent(ctx, 2) instanceof ConditionalExpressionContext
                 && isInIfCondition(
-                (Java8Parser.ConditionalExpressionContext) parent(ctx, 2));
+                        (ConditionalExpressionContext) parent(ctx, 2));
 
     }
 
-    private boolean isInIfCondition(Java8Parser.ConditionalExpressionContext ctx) {
-        if (parent(ctx, 1) instanceof Java8Parser.AssignmentExpressionContext
-                && parent(ctx, 2) instanceof Java8Parser.ExpressionContext) {
+    private boolean isInIfCondition(ConditionalExpressionContext ctx) {
+        if (parent(ctx, 1) instanceof AssignmentExpressionContext
+                && parent(ctx, 2) instanceof ExpressionContext) {
 
             ParserRuleContext candidate = parent(ctx, 3);
-            return candidate instanceof Java8Parser.IfThenElseStatementContext
-                    || candidate instanceof Java8Parser.IfThenStatementContext
-                    || candidate instanceof Java8Parser.IfThenElseStatementNoShortIfContext;
+            return candidate instanceof IfThenElseStatementContext
+                    || candidate instanceof IfThenStatementContext
+                    || candidate instanceof IfThenElseStatementNoShortIfContext;
         }
         return false;
     }
 
+    private boolean isInIfCondition(RelationalExpressionContext ctx) {
+        if (ctx.getParent() instanceof EqualityExpressionContext
+                && parent(ctx, 2) instanceof AndExpressionContext
+                && parent(ctx, 3) instanceof ExclusiveOrExpressionContext
+                && parent(ctx, 4) instanceof InclusiveOrExpressionContext
+                && parent(ctx, 5) instanceof ConditionalAndExpressionContext
+                && parent(ctx, 6) instanceof ConditionalOrExpressionContext
+                && parent(ctx, 7) instanceof ConditionalExpressionContext) {
 
-    private boolean isInIfCondition(Java8Parser.RelationalExpressionContext ctx) {
-        if (ctx.getParent() instanceof Java8Parser.EqualityExpressionContext
-                && parent(ctx, 2) instanceof Java8Parser.AndExpressionContext
-                && parent(ctx, 3) instanceof Java8Parser.ExclusiveOrExpressionContext
-                && parent(ctx, 4) instanceof Java8Parser.InclusiveOrExpressionContext
-                && parent(ctx, 5) instanceof Java8Parser.ConditionalAndExpressionContext
-                && parent(ctx, 6) instanceof Java8Parser.ConditionalOrExpressionContext
-                && parent(ctx, 7) instanceof Java8Parser.ConditionalExpressionContext) {
-
-            Java8Parser.ConditionalExpressionContext condExpr = (Java8Parser.ConditionalExpressionContext) parent(
+            ConditionalExpressionContext condExpr = (ConditionalExpressionContext) parent(
                     ctx, 7);
 
             if (isTernaryOperator(condExpr)) {
@@ -1928,15 +2038,15 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return false;
     }
 
-    private boolean isInIfCondition(Java8Parser.EqualityExpressionContext ctx) {
-        if (ctx.getParent() instanceof Java8Parser.AndExpressionContext
-                && parent(ctx, 2) instanceof Java8Parser.ExclusiveOrExpressionContext
-                && parent(ctx, 3) instanceof Java8Parser.InclusiveOrExpressionContext
-                && parent(ctx, 4) instanceof Java8Parser.ConditionalAndExpressionContext
-                && parent(ctx, 5) instanceof Java8Parser.ConditionalOrExpressionContext
-                && parent(ctx, 6) instanceof Java8Parser.ConditionalExpressionContext) {
+    private boolean isInIfCondition(EqualityExpressionContext ctx) {
+        if (ctx.getParent() instanceof AndExpressionContext
+                && parent(ctx, 2) instanceof ExclusiveOrExpressionContext
+                && parent(ctx, 3) instanceof InclusiveOrExpressionContext
+                && parent(ctx, 4) instanceof ConditionalAndExpressionContext
+                && parent(ctx, 5) instanceof ConditionalOrExpressionContext
+                && parent(ctx, 6) instanceof ConditionalExpressionContext) {
 
-            Java8Parser.ConditionalExpressionContext condExpr = (Java8Parser.ConditionalExpressionContext) parent(
+            ConditionalExpressionContext condExpr = (ConditionalExpressionContext) parent(
                     ctx, 6);
 
             if (isTernaryOperator(condExpr)) {
@@ -1948,10 +2058,9 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return false;
     }
 
-    private boolean isTernaryOperator(Java8Parser.ConditionalExpressionContext ctx) {
+    private boolean isTernaryOperator(ConditionalExpressionContext ctx) {
         return ctx.getChildCount() > 1;
     }
-
 
     private ParserRuleContext parent(ParserRuleContext ctx, int level) {
         for (int i = 0; i < level; i++) {
@@ -1964,46 +2073,46 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     private boolean isCastOutsideOfInstanceof(
-            Java8Parser.LocalVariableDeclarationContext ctx,
-            Java8Parser.VariableDeclaratorContext var) {
+            LocalVariableDeclarationContext ctx,
+            VariableDeclaratorContext var) {
         // checks if this involves a cast
-        if (getInnerChild(var.variableInitializer(), Java8Parser.ExpressionContext.class,
-                Java8Parser.AssignmentExpressionContext.class,
-                Java8Parser.ConditionalExpressionContext.class,
-                Java8Parser.ConditionalOrExpressionContext.class,
-                Java8Parser.ConditionalAndExpressionContext.class,
-                Java8Parser.InclusiveOrExpressionContext.class,
-                Java8Parser.ExclusiveOrExpressionContext.class, Java8Parser.AndExpressionContext.class,
-                Java8Parser.EqualityExpressionContext.class,
-                Java8Parser.RelationalExpressionContext.class, Java8Parser.ShiftExpressionContext.class,
-                Java8Parser.AdditiveExpressionContext.class,
-                Java8Parser.MultiplicativeExpressionContext.class,
-                Java8Parser.UnaryExpressionContext.class,
-                Java8Parser.UnaryExpressionNotPlusMinusContext.class,
-                Java8Parser.CastExpressionContext.class) == null) {
+        if (getInnerChild(var.variableInitializer(), ExpressionContext.class,
+                AssignmentExpressionContext.class,
+                ConditionalExpressionContext.class,
+                ConditionalOrExpressionContext.class,
+                ConditionalAndExpressionContext.class,
+                InclusiveOrExpressionContext.class,
+                ExclusiveOrExpressionContext.class, AndExpressionContext.class,
+                EqualityExpressionContext.class,
+                RelationalExpressionContext.class, ShiftExpressionContext.class,
+                AdditiveExpressionContext.class,
+                MultiplicativeExpressionContext.class,
+                UnaryExpressionContext.class,
+                UnaryExpressionNotPlusMinusContext.class,
+                CastExpressionContext.class) == null) {
             return false;
         }
         // checks if the variable declaration is located inside an if
-        if (hasParents(ctx, Java8Parser.LocalVariableDeclarationStatementContext.class,
-                Java8Parser.BlockStatementContext.class, Java8Parser.BlockStatementsContext.class,
-                Java8Parser.BlockContext.class,
-                Java8Parser.StatementWithoutTrailingSubstatementContext.class)) {
+        if (hasParents(ctx, LocalVariableDeclarationStatementContext.class,
+                BlockStatementContext.class, BlockStatementsContext.class,
+                BlockContext.class,
+                StatementWithoutTrailingSubstatementContext.class)) {
 
-            Java8Parser.StatementWithoutTrailingSubstatementContext st = (Java8Parser.StatementWithoutTrailingSubstatementContext) parent(
+            StatementWithoutTrailingSubstatementContext st = (StatementWithoutTrailingSubstatementContext) parent(
                     ctx, 5);
 
-            if (hasParents(st, Java8Parser.StatementNoShortIfContext.class,
-                    Java8Parser.IfThenElseStatementContext.class)) {
+            if (hasParents(st, StatementNoShortIfContext.class,
+                    IfThenElseStatementContext.class)) {
                 // checks if the condition involves an instanceof
                 return !isInstanceofCondition(
-                        ((Java8Parser.IfThenElseStatementContext) st.getParent()
+                        ((IfThenElseStatementContext) st.getParent()
                                 .getParent()).expression(),
                         var.variableDeclaratorId().getText());
-            } else if (hasParents(st, Java8Parser.StatementContext.class,
-                    Java8Parser.IfThenStatementContext.class)) {
+            } else if (hasParents(st, StatementContext.class,
+                    IfThenStatementContext.class)) {
                 // checks if the condition involves an instanceof
                 return !isInstanceofCondition(
-                        ((Java8Parser.IfThenStatementContext) st.getParent().getParent())
+                        ((IfThenStatementContext) st.getParent().getParent())
                                 .expression(),
                         ""/* TODO extract casted identifier */);
             }
@@ -2011,17 +2120,17 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         return true;
     }
 
-    private boolean isInstanceofCondition(Java8Parser.ExpressionContext expr,
-                                          String identifier) {
-        Java8Parser.RelationalExpressionContext child = (Java8Parser.RelationalExpressionContext) getInnerChild(
-                expr, Java8Parser.AssignmentExpressionContext.class,
-                Java8Parser.ConditionalExpressionContext.class,
-                Java8Parser.ConditionalOrExpressionContext.class,
-                Java8Parser.ConditionalAndExpressionContext.class,
-                Java8Parser.InclusiveOrExpressionContext.class,
-                Java8Parser.ExclusiveOrExpressionContext.class, Java8Parser.AndExpressionContext.class,
-                Java8Parser.EqualityExpressionContext.class,
-                Java8Parser.RelationalExpressionContext.class);
+    private boolean isInstanceofCondition(ExpressionContext expr,
+            String identifier) {
+        RelationalExpressionContext child = (RelationalExpressionContext) getInnerChild(
+                expr, AssignmentExpressionContext.class,
+                ConditionalExpressionContext.class,
+                ConditionalOrExpressionContext.class,
+                ConditionalAndExpressionContext.class,
+                InclusiveOrExpressionContext.class,
+                ExclusiveOrExpressionContext.class, AndExpressionContext.class,
+                EqualityExpressionContext.class,
+                RelationalExpressionContext.class);
 
         if (child == null) {
             return false;
@@ -2051,7 +2160,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     private ParseTree getInnerChild(ParserRuleContext ctx,
-                                    Class<?>... children) {
+            Class<?>... children) {
         if (children != null) {
             ParseTree rule = ctx;
 
@@ -2079,7 +2188,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
     }
 
     private String escapeIdentifier(String identifier,
-                                    boolean shouldBeLowercase) {
+            boolean shouldBeLowercase) {
 
         if (RESERVED_KEYWORDS.contains(identifier)) {
             return "\\i" + identifier;
@@ -2122,24 +2231,4 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         }
         return true;
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 }

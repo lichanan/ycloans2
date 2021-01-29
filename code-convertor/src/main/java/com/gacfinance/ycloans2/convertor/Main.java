@@ -1,8 +1,7 @@
 package com.gacfinance.ycloans2.convertor;
 
-import com.gacfinance.ycloans2.convertor.grammar.Java8Lexer;
-import com.gacfinance.ycloans2.convertor.grammar.Java8Parser;
-import com.gacfinance.ycloans2.convertor.grammar.Java8ParserBaseListener;
+import com.gacfinance.ycloans2.convertor.grammar.single.Java8Lexer;
+import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser;
 import org.antlr.v4.runtime.*;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.ParseTreeWalker;
@@ -13,16 +12,16 @@ import java.io.InputStream;
 
 public class Main {
 
-    public static class ClassNameOutputListener extends Java8ParserBaseListener {
+   /* public static class ClassNameOutputListener extends Java8ParserBaseListener {
 //        BufferedTokenStream tokens;
 //        TokenStreamRewriter rewriter;
-        /** Create TokenStreamRewriter attached to token stream
+        *//** Create TokenStreamRewriter attached to token stream
          *  sitting between the Cymbol lexer and parser.
-         */
-/*        public CommentShifter() {
+         *//*
+*//*        public CommentShifter() {
 //            this.tokens = tokens;
 //            rewriter = new TokenStreamRewriter(tokens);
-        }*/
+        }*//*
 
 //        public void enterClassModifierContext
 
@@ -140,6 +139,6 @@ public class Main {
         ParseTreeWalker walker = new ParseTreeWalker();
         ClassNameOutputListener classNameOutputListener = new ClassNameOutputListener();
         walker.walk(classNameOutputListener,parseTree);
-    }
+    }*/
 
 }
