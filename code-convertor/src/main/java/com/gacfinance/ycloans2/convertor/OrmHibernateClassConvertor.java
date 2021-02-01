@@ -18,6 +18,7 @@ import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.ClassTypeCon
 import com.gacfinance.ycloans2.convertor.grammar.single.Java8Parser.ClassOrInterfaceTypeContext;
 
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
@@ -103,6 +104,9 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
 
     @Override
     public Void visitNormalClassDeclaration(NormalClassDeclarationContext ctx) {
+//        Token token = ctx.getStart();
+//        int i = token.getTokenIndex();
+
         if (hasModifier(ctx.classModifier(), "public")) {
             write("public ");
         }
@@ -293,9 +297,9 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
             }
             write(escapeIdentifier(property, true));
         } else if ("toString".equals(methodName) && ctx.formalParameterList() == null) {
-            write("toString");
+            write("toString()");
         } else if ("hashCode".equals(methodName) && ctx.formalParameterList() == null) {
-            write("hashCode");
+            write("hashCode()");
         } else {
             write(escapeIdentifier(methodName, true));
 
@@ -571,6 +575,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
             }*/
 
             write(escapeIdentifier(name, true));
+//            write("()");
         } else {
             if (ctx.Identifier() != null) {
                 Matcher matcher = GETTER_PATTERN.matcher(ctx.Identifier().getText());
@@ -639,9 +644,9 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
             }
             write(escapeIdentifier(property, true));
         } else if ("toString".equals(methodName) && ctx.argumentList() == null) {
-            write("toString");
+            write("toString()");
         } else if ("hashCode".equals(methodName) && ctx.argumentList() == null) {
-            write("hashCode");
+            write("hashCode()");
         } else {
             write(escapeIdentifier(methodName, true));
             write("(");
@@ -675,11 +680,11 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
             } else {
                 property = property.toLowerCase();
             }
-            write(escapeIdentifier(property, true));
+            write(escapeIdentifier(property, true)+"()");
         } else if ("toString".equals(methodName) && ctx.argumentList() == null) {
-            write("toString");
+            write("toString()");
         } else if ("hashCode".equals(methodName) && ctx.argumentList() == null) {
-            write("hashCode");
+            write("hashCode()");
         } else {
             write(escapeIdentifier(ctx.Identifier().getText(), true));
             write("(");
@@ -856,19 +861,25 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
                     ceylonType = "ObjectArray<" + type + ">";
                     break;
             }*/
+            write("new ");
             write(type);
             if (ctx.arrayInitializer() != null) {
 //                write(".with");
             }
         } else {
 //            write("ObjectArray<");
+            write("new ");
+            write(ctx.classOrInterfaceType().getText());
             visitClassOrInterfaceType(ctx.classOrInterfaceType());
 //            write(">");
 //            if (ctx.arrayInitializer() != null) {
 //                write(".with");
 //            }
         }
-        write("(");
+
+        write("[]");
+
+//        write(" { ");
 
         if(ctx.arrayInitializer() != null) {
             visitArrayInitializer(ctx.arrayInitializer());
@@ -877,10 +888,17 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
         } else {
             visitDims(ctx.dims());
         }
-        write(")");
+//        write(" } ");
 
         return null;
     }
+
+
+//    @Override
+//    public Void visitClassOrInterfaceType(Java8Parser.ClassOrInterfaceTypeContext ctx){
+//        write(ctx.getText());
+//        return null;
+//    }
 
     @Override
     public Void visitArrayInitializer(Java8Parser.ArrayInitializerContext ctx) {
@@ -923,6 +941,12 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
                 // TODO int a[] should be converted to IntArray, but unfortunately at this point we can't know that it's an array
                 // we should do some sort of lookahead :(
                 visitUnannType(ctx.localVariableDeclaration().unannType());
+
+                if (ctx.localVariableDeclaration().unannType().unannReferenceType()!=null) {
+                    if (ctx.localVariableDeclaration().unannType().unannReferenceType().unannArrayType() != null) {
+                        write("[]");
+                    }
+                }
 
                 if(n.optional)
                     write("?");
@@ -997,6 +1021,7 @@ public class OrmHibernateClassConvertor extends Java8BaseVisitor<Void> {
             if (i > 0) {
                 write(".");
             }
+            write("new ");
             write(ctx.Identifier().get(i).getText());
         }
         // TODO other identifiers
