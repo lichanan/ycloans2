@@ -68,20 +68,6 @@ public class ScopeTree extends Java8BaseVisitor<Void> {
         return super.visitCompilationUnit(ctx);
     }
 
-/*    @Override
-    public Void visitPackageDeclaration(Java8Parser.PackageDeclarationContext ctx) {
-        Node n = new Node();
-        n.data = ctx;
-        n.parent = scopeNode;
-        n.scope = true;
-        scopeNode.addNode(n);
-
-        scopeNode = n;
-//        visitPackageDeclaration(ctx);
-        return null;
-    }*/
-
-
     @Override
     public Void visitNormalClassDeclaration(NormalClassDeclarationContext ctx) {
         Node n = new Node();
@@ -96,8 +82,6 @@ public class ScopeTree extends Java8BaseVisitor<Void> {
 
         return null;
     }
-
-
 
 
     @Override
